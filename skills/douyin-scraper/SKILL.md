@@ -1,220 +1,256 @@
 ---
 name: douyin-scraper
-description: Wrap the afengzi/douyin_scapy project as an OpenClaw skill for Douyin creator scraping, image/video-frame capture, OCR extraction, optional Redis persistence, and scheduled monitoring. Use only when the operator explicitly owns the target account/cookies or has a legitimate compliance basis to collect the content.
-homepage: https://github.com/afengzi/douyin_scapy
-metadata:
-  {
-    "openclaw": {
-      "emoji": "🎵",
-      "requires": {
-        "bins": ["python3", "git", "ffmpeg"],
-        "env": []
-      }
-    }
-  }
+description: Use the upstream afengzi/douyin_scapy project in a repeatable, operator-safe way for Douyin login, historical scraping, optional monitoring, image/frame capture, OCR, and optional Redis/webhook integration. Only use when the operator owns the account or has a legitimate compliance basis.
 ---
 
 # Douyin Scraper
 
-把 `afengzi/douyin_scapy` 封装成一个可复用的 OpenClaw skill，供 agent 在明确授权、明确目标、明确合规边界时调用。
+把 `afengzi/douyin_scapy` 封装成一个**可初始化、可运行、可最小验收**的 OpenClaw skill，而不是只给说明。
 
-## 何时触发
+这个 skill 不直接内置上游源码；它提供一条明确的上游获取路径，以及更稳妥的初始化、运行、校验脚本。
 
-适合这些任务：
+## 适用边界
 
-- 用户明确要求抓取某个抖音主页的公开图文作品。
-- 用户需要下载图文原图，或从视频提取首帧做 OCR。
-- 用户需要把 OCR 结果写入 Redis，或继续做结构化提取。
-- 用户要做定时巡检：检查是否有新作品并发送 webhook 通知。
+适合：
 
-不适合这些任务：
+- 用户明确要求抓取自己可合法访问的抖音创作者页面。
+- 需要下载图文作品，或从视频提取首帧做 OCR。
+- 需要把 OCR 结果写入 Redis，或继续做结构化提取。
+- 需要在人工登录后做短周期监控验证。
 
-- 不明确是否合法、是否得到授权的抓取。
-- 试图绕过平台风控、批量盗采、撞库、刷接口、隐藏身份等高风险行为。
-- 要求导出、分享或提交 `cookies.json`、`.env`、日志、下载产物等敏感/运行态文件。
+不适合：
 
-## 上游项目摘要
+- 授权不清、用途不清、合规基础不清的抓取。
+- 试图绕过平台风控、隐藏身份、批量盗采、分享登录态。
+- 要求把 `.env`、`cookies.json`、日志、下载产物打包回传。
 
-上游仓库是一个 **Playwright + HTTP 下载 + ffmpeg + RapidOCR + Redis** 的组合工具，能力包括：
+## skill 内文件
 
-1. 打开抖音主页并获取/复用 cookie。
-2. 抓取目标用户作品列表。
-3. 对图文作品下载原图；对视频尝试抽取高清首帧。
-4. 对图片做 OCR。
-5. 可选写入 Redis，并通过 LLM/正则补充结构化信息。
-6. 可选进入定时监控并走企业微信/钉钉 webhook 通知。
+- `scripts/fetch-upstream.sh`：克隆或更新上游 `afengzi/douyin_scapy`
+- `scripts/bootstrap.sh`：检查依赖、建立虚拟环境、安装 Python 依赖与 Playwright Chromium
+- `scripts/run-douyin.sh`：统一运行入口，带前置检查和更清晰的报错
+- `scripts/verify-skill.sh`：对 skill 结构和脚本做最小可交付校验
+- `references/upstream-analysis.md`：上游能力与风险说明
 
-## 主要入口与关键文件
+## 推荐工作流
 
-- `main.py`：主入口，支持 `--login` / `--scrape` / `--monitor` / `--all`
-- `douyin_api.py`：Playwright 浏览器启动、cookie 加载、页面抓取、视频帧提取
-- `downloader.py`：图片/首帧下载与去重记录
-- `monitor.py`：轮询监控、异常重连、时间窗口控制
-- `ocr_redis.py`：RapidOCR + Redis 写入 + 结构化提取
-- `llm_extractor.py`：可选 OpenAI-compatible LLM 提取
-- `stock_lookup.py`：股票名称/代码补全缓存
-- `config.py`：目标用户、目录、时间窗口、Redis、Webhook、LLM 等配置
-- `.env.example`：敏感环境变量模板
+### 1) 获取上游代码
 
-## 依赖与环境
-
-### 系统依赖
-
-- `python3`
-- `ffmpeg`
-- Playwright Chromium 运行环境
-
-### Python 依赖
-
-参考上游 `requirements.txt`：
-
-- `playwright`
-- `httpx`
-- `loguru`
-- `apscheduler`
-- `imageio-ffmpeg`
-- `redis`
-- `rapidocr-onnxruntime`
-- `python-dotenv`
-
-如果要启用 LLM 结构化提取，上游代码还隐含需要：
-
-- `openai`
-- `pydantic`
-
-> 注意：上游 `requirements.txt` 当前**未显式列出** `openai` / `pydantic`，这属于可用性缺口。实际运行 LLM 提取前应补装。
-
-## 配置方法
-
-### 1) 复制环境变量模板
+默认会放到：
 
 ```bash
-cd /path/to/douyin_scapy
+/home/node/.openclaw/workspace/repos/douyin_scapy
+```
+
+执行：
+
+```bash
+{baseDir}/scripts/fetch-upstream.sh
+```
+
+也可以指定目录或分支：
+
+```bash
+{baseDir}/scripts/fetch-upstream.sh --dest /tmp/douyin_scapy --ref main
+```
+
+脚本会：
+
+- 首次运行时 `git clone` 上游仓库；
+- 已存在仓库时执行 `git fetch` + `git pull --ff-only`；
+- 检查 `main.py` / `requirements.txt` / `config.py` / `.env.example` 是否齐全；
+- 给出下一步初始化提示。
+
+## 2) 初始化运行环境
+
+```bash
+{baseDir}/scripts/bootstrap.sh /home/node/.openclaw/workspace/repos/douyin_scapy
+```
+
+默认行为：
+
+- 检查 `python3` / `git` 是否存在；
+- 在上游目录创建或复用 `.venv`；
+- 安装 `requirements.txt`；
+- 补装上游漏写但代码实际会 import 的 `openai` / `pydantic`；
+- 安装 Playwright Chromium。
+
+只做预检、不真正安装：
+
+```bash
+{baseDir}/scripts/bootstrap.sh /home/node/.openclaw/workspace/repos/douyin_scapy --dry-run
+```
+
+## 3) 按需配置
+
+上游仍需要人工配置运行参数，这是正常的。
+
+至少检查：
+
+- `.env`：从 `.env.example` 复制后按需填写 Redis / webhook / LLM 配置
+- `config.py`：替换默认示例 `TARGET_USERS`，确认 `SAVE_DIR`、`MONITOR_INTERVAL`、`MONITOR_TIME_WINDOW`
+
+建议：
+
+```bash
+cd /home/node/.openclaw/workspace/repos/douyin_scapy
 cp .env.example .env
 ```
 
-然后按需填写：
+## 4) 人工扫码登录（必要交互）
 
-- `REDIS_HOST`
-- `REDIS_PORT`
-- `REDIS_PASSWORD`
-- `REDIS_DB`
-- `WECHAT_WEBHOOK`
-- `DINGTALK_WEBHOOK`
-- `LLM_API_BASE`
-- `LLM_MODEL_NAME`
-- `LLM_API_KEY`
-
-### 2) 修改 `config.py`
-
-重点看：
-
-- `TARGET_USERS`
-- `MONITOR_INTERVAL`
-- `MONITOR_TIME_WINDOW`
-- `SAVE_DIR`
-- `BROWSER_HEADLESS`
-
-> 默认仓库里写死了一个 `TARGET_USERS` 示例地址。实际复用时应替换成你自己的目标，避免误抓别人的页面。
-
-## 推荐运行方式
-
-### 首次登录
+首次登录需要操作者亲自扫码，agent 不能替代。
 
 ```bash
-python3 main.py --login
+{baseDir}/scripts/run-douyin.sh /home/node/.openclaw/workspace/repos/douyin_scapy --login
 ```
 
-### 历史抓取
+说明：
+
+- 这一步会打开浏览器；
+- 需要人工完成抖音扫码登录；
+- 成功后通常会生成或更新 `cookies.json`；
+- `cookies.json` 属于敏感登录态文件，不应提交到 skill 仓库。
+
+## 5) 运行抓取 / 监控
+
+仅抓历史：
 
 ```bash
-python3 main.py --scrape
+{baseDir}/scripts/run-douyin.sh /home/node/.openclaw/workspace/repos/douyin_scapy --scrape
 ```
 
-### 仅监控
+仅监控：
 
 ```bash
-python3 main.py --monitor --interval 300
+{baseDir}/scripts/run-douyin.sh /home/node/.openclaw/workspace/repos/douyin_scapy --monitor --interval 300
 ```
 
-### 历史抓取 + 监控
+历史抓取 + 监控：
 
 ```bash
-python3 main.py --all
+{baseDir}/scripts/run-douyin.sh /home/node/.openclaw/workspace/repos/douyin_scapy --all
 ```
 
-## 在 OpenClaw 里怎么安全用
+## 最小验收流程
 
-推荐 agent 按这个顺序操作：
+下面这套流程不要求真实账号内容，也不要求真实 cookie 回传；目标是证明 skill 已经接近“真正可用”。
 
-1. 先确认目标账号、用途、授权和保存范围。
-2. 检查 `.env`、`cookies.json`、`download_history.json` 是否已存在。
-3. 必要时用可见浏览器执行一次 `--login`，让操作者扫码。
-4. 先跑单用户、小范围验证，不要直接长时间监控。
-5. 如需监控，再开启 `--monitor` / `--all`。
-6. 输出结论时只返回统计、路径、摘要，不回传 cookie、webhook、原始敏感配置。
+### A. 结构校验
 
-## 快速验证清单
+```bash
+{baseDir}/scripts/verify-skill.sh
+```
 
-最小验证建议：
+应至少通过：
 
-1. `python3 -m pip install -r requirements.txt`
-2. `python3 -m playwright install chromium`
-3. `python3 main.py --login` 成功生成 `cookies.json`
-4. `python3 main.py --scrape` 能下载至少一个作品目录
-5. 若配了 Redis：确认出现 `douyin:ocr:*` 记录
-6. 若配了 Webhook：新作品通知能成功发出
+- `SKILL.md` frontmatter 只包含 `name` / `description`
+- 必要脚本存在且可解析
+- 未把 `.env`、cookies、日志、下载目录等敏感或运行态产物塞进 skill
 
-## 这个 skill 刻意不带入的内容
+### B. 上游获取校验
 
-以下内容属于**敏感信息、运行态垃圾或不可复用产物**，不应纳入 skill：
+```bash
+{baseDir}/scripts/fetch-upstream.sh --dest /tmp/douyin-skill-check
+```
 
-- `.git/`
+应能完成 clone，并检测到关键文件。
+
+### C. 初始化预检
+
+```bash
+{baseDir}/scripts/bootstrap.sh /tmp/douyin-skill-check --dry-run
+```
+
+应能通过依赖和文件检查。
+
+### D. 运行入口预检
+
+```bash
+{baseDir}/scripts/run-douyin.sh /tmp/douyin-skill-check --help
+```
+
+应能打印帮助；
+如执行 `--login`，需明确提示人工扫码登录。
+
+### E. 真实功能最小人工验收（需要操作者参与）
+
+在合法授权前提下，可由操作者自行做一轮：
+
+1. `run-douyin.sh ... --login`
+2. 人工扫码完成登录
+3. 将 `config.py` 中 `TARGET_USERS` 改成自己的目标
+4. `run-douyin.sh ... --scrape`
+5. 确认出现下载目录或首帧文件
+6. 如配置了 Redis / webhook，再分别验证写入与通知
+
+## 失败排查
+
+### `python3 not found` / `git not found`
+
+先补系统依赖，再重新执行 `bootstrap.sh`。
+
+### `requirements.txt not found` / `main.py not found`
+
+通常是：
+
+- 传入了错误目录；
+- 上游仓库未完整 clone；
+- 目录不是 `douyin_scapy` 根目录。
+
+优先重新运行：
+
+```bash
+{baseDir}/scripts/fetch-upstream.sh --dest /some/clean/path
+```
+
+### Playwright / Chromium 相关报错
+
+重新执行：
+
+```bash
+{baseDir}/scripts/bootstrap.sh /path/to/douyin_scapy
+```
+
+如果宿主机缺系统依赖，按 Playwright/Chromium 的缺失提示补齐。
+
+### `cookies.json` 不存在或登录后仍抓不到内容
+
+- 先确认操作者确实完成了扫码登录；
+- 检查浏览器是否被关闭过早；
+- 再次执行 `--login`；
+- 注意平台页面结构变化也可能导致登录态初始化失效。
+
+### Redis / webhook / LLM 报错
+
+这些是可选功能。
+
+- 先只验证 `--login` + `--scrape` 主链路；
+- 再单独检查 `.env` 中对应配置；
+- 上游 `requirements.txt` 未显式列出全部 LLM 依赖，所以 `bootstrap.sh` 已补装 `openai` / `pydantic`。
+
+### `config.py` 里还是默认示例目标
+
+这是上游遗留问题，不适合作为生产默认值。运行前必须人工替换成自己的目标用户配置。
+
+## 交付边界
+
+这个 skill 刻意**不包含**以下内容：
+
+- 上游源码本体
 - `.env`
 - `cookies.json`
 - `download_history.json`
 - `douyin_scraper.log`
 - `downloads/`
-- `stock_list.json`（运行时缓存）
+- `stock_list.json`
 - `__pycache__/`
-- `dist/` / `build/` / `.venv/`
-- 任何真实 webhook、真实 Redis 密码、真实目标账号清单
+- `.venv/`
+- 任何真实 webhook、密码、cookie、真实目标账号列表
 
-## 限制与风险
+## 当前仍受上游限制的点
 
-### 平台与合规风险
-
-- 抖音抓取受平台条款、访问频率、反爬策略约束。
-- 即便是公开内容，也不代表可以任意大规模抓取、商用、转载或二次分发。
-- 登录态 cookie 涉及账号安全，必须由账号持有人自行扫码、保管和撤销。
-
-### 技术风险
-
-- 页面结构和接口随时可能变化，Playwright 拦截逻辑可能失效。
-- 高频轮询、批量多账号抓取容易触发风控。
-- OCR 对图片质量敏感，视频首帧不一定包含有效文字。
-- Redis、Webhook、LLM 都是可选依赖；任何一个不可用都可能导致部分流程降级。
-- `monitor.py` 注释写“上海时间”，但当前实现用的是本机 `datetime.now()`，严格时区一致性要靠运行环境自己保证。
-
-### 仓库可维护性缺口
-
-- `requirements.txt` 没列全 LLM 依赖。
-- `config.py` 内含硬编码目标用户示例，不适合作为通用默认值。
-- 测试脚本依赖真实 Redis key 和真实数据，不适合作为通用 skill 自测。
-
-## 建议的 skill 使用姿势
-
-如果 agent 只是需要“会用这个项目”，优先：
-
-- 复用这个 skill 的说明；
-- 用 `scripts/bootstrap.sh` 快速准备环境；
-- 用 `scripts/run-douyin.sh` 统一执行命令；
-- 在独立工作目录保存运行产物；
-- 对外只报告必要结果，不暴露账号态数据。
-
-## 附带文件
-
-- `references/upstream-analysis.md`：上游项目分析与筛选结论
-- `scripts/bootstrap.sh`：初始化依赖与 Playwright
-- `scripts/run-douyin.sh`：包装运行入口
-
+- 页面结构变化会影响抓取稳定性；
+- `config.py` 仍由上游维护，默认示例目标需要人工替换；
+- 严格意义上的功能验收仍需要人工扫码登录；
+- 若要做真实抓取验证，必须由操作者在合法授权下完成。

@@ -1,0 +1,15 @@
+.env
+.env.*
+cookies.json
+download_history.json
+douyin_scraper.log
+downloads/
+stock_list.json
+.venv/
+dist/
+build/
+__pycache__/
+*.pyc
+*.pyo
+*.log
+*.tmp
