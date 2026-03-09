@@ -19,6 +19,7 @@ This repository exports the current workspace-local skill folders from my OpenCl
 - `video-frames`
 - `web-research`
 - `workspace-operator`
+- `douyin-scraper`
 
 ## Notes
 
